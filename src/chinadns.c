@@ -30,6 +30,8 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/param.h>
+#include <grp.h>
+#include <pwd.h>
 
 #include "local_ns_parser.h"
 
@@ -82,7 +84,7 @@ static int dns_servers_len;
 static int has_chn_dns;
 static id_addr_t *dns_server_addrs;
 
-static int parse_args(int argc, char **argv);
+static int parse_args(int *argc, char **argv);
 
 static int setnonblock(int sock);
 static int resolve_dns_servers();
@@ -132,6 +134,7 @@ static float empty_result_delay = EMPTY_RESULT_DELAY;
 
 static int local_sock;
 static int remote_sock;
+static char *m_runasuser = NULL;
 
 static void usage(void);
 
@@ -168,6 +171,50 @@ static void gcov_handler(int signum)
 #define DLOG(s...)
 #endif
 
+static int run_as_others() {
+  int ret = EXIT_FAILURE;
+  struct group *grp = NULL;
+  struct passwd *usr = NULL;
+  char *un = NULL;
+
+  if (getuid()) {
+    VERR("need root to run as %s", m_runasuser);
+    goto out;
+  }
+
+  un = strdup(m_runasuser);
+  char *gn = strchr(un, ':');
+  if (gn) {
+    *gn++ = '\0';
+    if (!(grp = getgrnam(gn))) {
+      VERR("group %s not found", gn);
+      goto out;
+    }
+  }
+
+  if (!(usr = getpwnam(un))) {
+    VERR("user %s not found", un);
+    goto out;
+  }
+
+  if (grp && setgid(grp->gr_gid) < 0) {
+    ERR("setgid");
+    goto out;
+  }
+  if (setuid(usr->pw_uid) < 0) {
+    ERR("setuid");
+    goto out;
+  }
+
+  ret = EXIT_SUCCESS;
+
+out:
+  if (un) {
+    free(un);
+  }
+  return ret;
+}
+
 int main(int argc, char **argv) {
   fd_set readset, errorset;
   int max_fd;
@@ -177,17 +224,21 @@ int main(int argc, char **argv) {
 #endif
 
   memset(&id_addr_queue, 0, sizeof(id_addr_queue));
-  if (0 != parse_args(argc, argv))
+  if (0 != parse_args(&argc, argv))
     return EXIT_FAILURE;
   if (!compression)
     memset(&delay_queue, 0, sizeof(delay_queue));
+  if (0 != dns_init_sockets())
+    return EXIT_FAILURE;
+
+  if (m_runasuser && *m_runasuser && run_as_others())
+    return EXIT_FAILURE;
+
   if (0 != parse_ip_list())
     return EXIT_FAILURE;
   if (0 != parse_chnroute())
     return EXIT_FAILURE;
   if (0 != resolve_dns_servers())
-    return EXIT_FAILURE;
-  if (0 != dns_init_sockets())
     return EXIT_FAILURE;
 
   max_fd = MAX(local_sock, remote_sock) + 1;
@@ -239,9 +290,9 @@ static int setnonblock(int sock) {
   return 0;
 }
 
-static int parse_args(int argc, char **argv) {
+static int parse_args(int *argc, char **argv) {
   int ch;
-  while ((ch = getopt(argc, argv, "hb:p:s:l:c:y:dmvV")) != -1) {
+  while ((ch = getopt(*argc, argv, "hb:p:s:l:c:y:u:dmvV")) != -1) {
     switch (ch) {
       case 'h':
         usage();
@@ -263,6 +314,9 @@ static int parse_args(int argc, char **argv) {
         break;
       case 'y':
         empty_result_delay = atof(optarg);
+        break;
+      case 'u':
+        m_runasuser = strdup(optarg);
         break;
       case 'd':
         bidirectional = 1;
@@ -290,7 +344,7 @@ static int parse_args(int argc, char **argv) {
   if (listen_port == NULL) {
     listen_port = strdup(default_listen_port);
   }
-  argc -= optind;
+  *argc -= optind;
   argv += optind;
   return 0;
 }
@@ -894,7 +948,7 @@ static void free_delay(int pos) {
 static void usage() {
   printf("%s\n", "\
 usage: chinadns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]\n\
-       [-c CHNROUTE_FILE] [-s DNS] [-m] [-v] [-V]\n\
+       [-c CHNROUTE_FILE] [-s DNS] [-m] [-v] [-u user[:group]] [-V]\n\
 Forward DNS requests.\n\
 \n\
   -l IPLIST_FILE        path to ip blacklist file\n\
@@ -909,10 +963,9 @@ Forward DNS requests.\n\
   -m                    use DNS compression pointer mutation\n\
                         (backlist and delaying would be disabled)\n\
   -v                    verbose logging\n\
+  -u user[:group]       run as other user and group\n\
   -h                    show this help message and exit\n\
   -V                    print version and exit\n\
 \n\
 Online help: <https://github.com/clowwindy/ChinaDNS>\n");
 }
-
-
