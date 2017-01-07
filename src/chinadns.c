@@ -32,6 +32,11 @@
 #include <sys/param.h>
 #include <grp.h>
 #include <pwd.h>
+#include <regex.h>
+#include <errno.h>
+#ifdef HAVE_SYS_INOTIFY_H
+#include <sys/inotify.h>
+#endif
 
 #include "local_ns_parser.h"
 
@@ -68,6 +73,12 @@ typedef struct {
   net_mask_t *nets;
 } net_list_t;
 
+typedef struct {
+  int fd;
+  int wd;
+  char filename[8];
+} inotify_data;
+
 
 // avoid malloc and free
 #define BUF_SIZE 512
@@ -82,7 +93,7 @@ static const char *default_dns_servers =
 static char *dns_servers = NULL;
 static int dns_servers_len;
 static int has_chn_dns;
-static id_addr_t *dns_server_addrs;
+static id_addr_t *dns_server_addrs = NULL;
 
 static int parse_args(int *argc, char **argv);
 
@@ -135,6 +146,10 @@ static float empty_result_delay = EMPTY_RESULT_DELAY;
 static int local_sock;
 static int remote_sock;
 static char *m_runasuser = NULL;
+static char *m_resolv_conf = NULL;
+
+#define INOTIFY_EVENT_SIZE    sizeof(struct inotify_event)
+#define INOTIFY_EVENT_BUF_LEN (32 * (INOTIFY_EVENT_SIZE + 16))
 
 static void usage(void);
 
@@ -178,7 +193,7 @@ static int run_as_others() {
   char *un = NULL;
 
   if (getuid()) {
-    VERR("need root to run as %s", m_runasuser);
+    VERR("need root to run as %s\n", m_runasuser);
     goto out;
   }
 
@@ -187,13 +202,13 @@ static int run_as_others() {
   if (gn) {
     *gn++ = '\0';
     if (!(grp = getgrnam(gn))) {
-      VERR("group %s not found", gn);
+      VERR("group %s not found\n", gn);
       goto out;
     }
   }
 
   if (!(usr = getpwnam(un))) {
-    VERR("user %s not found", un);
+    VERR("user %s not found\n", un);
     goto out;
   }
 
@@ -215,9 +230,80 @@ out:
   return ret;
 }
 
+#ifdef HAVE_SYS_INOTIFY_H
+static inotify_data *resolv_conf_mon() {
+  inotify_data *data = NULL;
+  if (!m_resolv_conf || !m_resolv_conf[0]) return data;
+
+  uint8_t ok = 0;
+  char *buf = strdup(m_resolv_conf);
+  if (!buf){
+    VERR("Out of memory\n");
+    exit(EXIT_FAILURE);
+  }
+  char *tmp = strrchr(buf, '/');
+  *tmp++ = '\0';
+  data = malloc(sizeof(*data) + strlen(tmp) + 1 - sizeof(data->filename));
+  if (!data) {
+    VERR("Out of memory\n");
+    exit(EXIT_FAILURE);
+  }
+
+  data->fd = inotify_init();
+  if (data->fd < 0) {
+    ERR("inotify_init");
+    goto out;
+  }
+
+  data->wd = inotify_add_watch(data->fd, tmp - 1 == buf ? "/" : buf, IN_MODIFY);
+  if (data->wd < 0) {
+    ERR("inotify_add_watch");
+    close(data->fd);
+    goto out;
+  }
+  strcpy(data->filename, tmp);
+  ok = 1;
+
+out:
+  free(buf);
+  if (!ok && data) {
+    free(data);
+    data = NULL;
+  }
+  return data;
+}
+#endif
+
+static uint8_t is_modified(inotify_data *data) {
+#ifdef HAVE_SYS_INOTIFY_H
+  int len, i = 0;
+  char buf[INOTIFY_EVENT_BUF_LEN];
+  struct inotify_event *event;
+
+  len = read(data->fd, buf, INOTIFY_EVENT_BUF_LEN);
+  if (len < 0) {
+    ERR("read inotify_event");
+    return 0;
+  }
+
+  while (i < len) {
+    event = (struct inotify_event *) &buf[i];
+    if (event->len && (event->mask & IN_MODIFY) && !(event->mask & IN_ISDIR)
+        && !strcmp(event->name, data->filename)) {
+      return 1;
+    }
+    i += INOTIFY_EVENT_SIZE + event->len;
+  }
+#else
+  (void) data;
+#endif
+  return 0;
+}
+
 int main(int argc, char **argv) {
   fd_set readset, errorset;
   int max_fd;
+  inotify_data *nd = NULL;
 
 #ifdef DEBUG
   signal(SIGTERM, gcov_handler);
@@ -241,7 +327,13 @@ int main(int argc, char **argv) {
   if (0 != resolve_dns_servers())
     return EXIT_FAILURE;
 
-  max_fd = MAX(local_sock, remote_sock) + 1;
+#ifdef HAVE_SYS_INOTIFY_H
+  nd = resolv_conf_mon();
+#endif
+  max_fd = MAX(local_sock, remote_sock);
+  if (nd && nd->fd > max_fd) { max_fd = nd->fd; }
+  max_fd++;
+
   while (1) {
     FD_ZERO(&readset);
     FD_ZERO(&errorset);
@@ -249,6 +341,7 @@ int main(int argc, char **argv) {
     FD_SET(local_sock, &errorset);
     FD_SET(remote_sock, &readset);
     FD_SET(remote_sock, &errorset);
+    if (nd) { FD_SET(nd->fd, &readset); }
     struct timeval timeout = {
       .tv_sec = 0,
       .tv_usec = 50 * 1000,
@@ -257,6 +350,8 @@ int main(int argc, char **argv) {
       ERR("select");
       return EXIT_FAILURE;
     }
+    if (nd && FD_ISSET(nd->fd, &readset) && is_modified(nd))
+      resolve_dns_servers();
     check_and_send_delay();
     if (FD_ISSET(local_sock, &errorset)) {
       // TODO getsockopt(..., SO_ERROR, ...);
@@ -292,7 +387,7 @@ static int setnonblock(int sock) {
 
 static int parse_args(int *argc, char **argv) {
   int ch;
-  while ((ch = getopt(*argc, argv, "hb:p:s:l:c:y:u:dmvV")) != -1) {
+  while ((ch = getopt(*argc, argv, "hb:p:s:l:c:y:u:r:dmvV")) != -1) {
     switch (ch) {
       case 'h':
         usage();
@@ -317,6 +412,13 @@ static int parse_args(int *argc, char **argv) {
         break;
       case 'u':
         m_runasuser = strdup(optarg);
+        break;
+      case 'r':
+        if (*optarg != '/') {
+          fprintf(stderr, "path '%s' must start with '/'\n", optarg);
+          exit(1);
+        }
+        m_resolv_conf = strdup(optarg);
         break;
       case 'd':
         bidirectional = 1;
@@ -349,34 +451,109 @@ static int parse_args(int *argc, char **argv) {
   return 0;
 }
 
+static char *parse_resolv_conf() {
+  char ns[80];
+  int rc;
+  regex_t preg;
+  regmatch_t pmatch[2];
+  FILE *f = NULL;
+  char *addrs = NULL, *tmp;
+
+  if (!m_resolv_conf || !m_resolv_conf[0]) {
+    addrs = malloc(1);
+    *addrs = '\0';
+    return addrs;
+  }
+
+  rc = regcomp(&preg, "^[[:blank:]]*nameserver[[:blank:]]+(([0-9]{1,3}\\.){3}[0-9]{1,3})[[:blank:]]*\n?$", REG_EXTENDED);
+  if (rc) {
+    VERR("regcomp error %d\n", rc);
+    exit(EXIT_FAILURE);
+  }
+
+  f = fopen(m_resolv_conf, "r");
+  if (!f) {
+    rc = errno;
+    if (rc != ENOENT) {
+      VERR("open %s error %d: %s\n", m_resolv_conf, rc, strerror(rc));
+    }
+    goto out;
+  }
+
+  rc = 0;
+  while (fgets(ns, 80, f)) {
+    if (!regexec(&preg, ns, 1, pmatch, 0)) rc++;
+  }
+  if (rc < 1) goto out;
+
+  tmp = addrs = malloc(rc * 16 + 1);
+  if (!addrs){
+    VERR("Out of memory\n");
+    exit(EXIT_FAILURE);
+  }
+
+  rewind(f);
+  while (fgets(ns, 80, f)) {
+    if (regexec(&preg, ns, 2, pmatch, 0)) continue;
+    rc = pmatch[1].rm_eo - pmatch[1].rm_so;
+    memcpy(tmp, ns + pmatch[1].rm_so, rc);
+    tmp += rc;
+    *tmp++ = ',';
+  }
+  *tmp = '\0';
+
+out:
+  if (f) fclose(f);
+  regfree(&preg);
+  if (!addrs) {
+    addrs = malloc(1);
+    *addrs = '\0';
+  }
+  return addrs;
+}
+
 static int resolve_dns_servers() {
   struct addrinfo hints;
   struct addrinfo *addr_ip;
   char* token;
-  int r;
+  int r, ret = -1;
   int i = 0;
-  char *pch = strchr(dns_servers, ',');
-  has_chn_dns = 0;
+  char *pch, *buf = NULL, *port, *dns2 = NULL;
   int has_foreign_dns = 0;
+  has_chn_dns = 0;
   dns_servers_len = 1;
   if (compression) {
     if (!chnroute_file) {
       VERR("Chnroutes are necessary when using DNS compression pointer mutation\n");
-      return -1;
+      goto out;
     }
   }
+
+  dns2 = parse_resolv_conf();
+  buf = malloc(strlen(dns_servers) + strlen(dns2) + 1);
+  if (!buf) {
+    VERR("Out of memory\n");
+    exit(EXIT_FAILURE);
+  }
+  sprintf(buf, "%s%s", dns2, dns_servers);
+  LOG("nameservers=%s\n", buf);
+
+  pch = strchr(buf, ',');
   while (pch != NULL) {
     dns_servers_len++;
     pch = strchr(pch + 1, ',');
   }
-  dns_server_addrs = calloc(dns_servers_len, sizeof(id_addr_t));
+  dns_server_addrs = realloc(dns_server_addrs, dns_servers_len * sizeof(id_addr_t));
+  if (!dns_server_addrs) {
+    VERR("Out of memory\n");
+    exit(EXIT_FAILURE);
+  }
 
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
-  token = strtok(dns_servers, ",");
+  token = strtok(buf, ",");
   while (token) {
-    char *port;
     memset(global_buf, 0, BUF_SIZE);
     strncpy(global_buf, token, BUF_SIZE - 1);
     port = (strrchr(global_buf, ':'));
@@ -388,7 +565,7 @@ static int resolve_dns_servers() {
     }
     if (0 != (r = getaddrinfo(global_buf, port, &hints, &addr_ip))) {
       VERR("%s:%s\n", gai_strerror(r), token);
-      return -1;
+      goto out;
     }
     if (compression) {
       if (test_ip_in_list(((struct sockaddr_in *)addr_ip->ai_addr)->sin_addr,
@@ -422,15 +599,19 @@ static int resolve_dns_servers() {
       if (compression) {
         VERR("You should have at least one Chinese DNS and one foreign DNS when "
              "using DNS compression pointer mutation\n");
-        return -1;
+        goto out;
       } else {
         VERR("You should have at least one Chinese DNS and one foreign DNS when "
              "chnroutes is enabled\n");
-        return 0;
       }
     }
   }
-  return 0;
+  ret = 0;
+
+out:
+  if (dns2) free(dns2);
+  if (buf) free(buf);
+  return ret;
 }
 
 static int cmp_in_addr(const void *a, const void *b) {
@@ -948,7 +1129,7 @@ static void free_delay(int pos) {
 static void usage() {
   printf("%s\n", "\
 usage: chinadns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]\n\
-       [-c CHNROUTE_FILE] [-s DNS] [-m] [-v] [-u user[:group]] [-V]\n\
+       [-c CHNROUTE_FILE] [-s DNS] [-m] [-v] [-u user[:group]] [-r RESOLV_CONF] [-V]\n\
 Forward DNS requests.\n\
 \n\
   -l IPLIST_FILE        path to ip blacklist file\n\
@@ -964,6 +1145,7 @@ Forward DNS requests.\n\
                         (backlist and delaying would be disabled)\n\
   -v                    verbose logging\n\
   -u user[:group]       run as other user and group\n\
+  -r RESOLV_CONF        read DNS servers from RESOLV_CONF file\n\
   -h                    show this help message and exit\n\
   -V                    print version and exit\n\
 \n\
