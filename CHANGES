@@ -1,3 +1,6 @@
+1.4.1 2017-01-07
+- Fix compile error
+
 1.4.0 2017-01-07
 - Add -u option to run as other user and group
 - Add -r option to read name servers from a resolv.conf file, and watching this file update name servers when file modified in Linux
