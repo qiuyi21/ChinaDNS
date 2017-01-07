@@ -1127,7 +1127,7 @@ static void free_delay(int pos) {
 }
 
 static void usage() {
-  printf("%s\n", "\
+  puts("\
 usage: chinadns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]\n\
        [-c CHNROUTE_FILE] [-s DNS] [-m] [-v] [-u user[:group]] [-r RESOLV_CONF] [-V]\n\
 Forward DNS requests.\n\
@@ -1139,8 +1139,9 @@ Forward DNS requests.\n\
   -y                    delay time for suspects, default: 0.3\n\
   -b BIND_ADDR          address that listens, default: 0.0.0.0\n\
   -p BIND_PORT          port that listens, default: 53\n\
-  -s DNS                DNS servers to use, default:\n\
-                        114.114.114.114,208.67.222.222:443,8.8.8.8\n\
+  -s DNS                DNS servers to use, default:");
+  printf("                        %s\n", default_dns_servers);
+  puts("\
   -m                    use DNS compression pointer mutation\n\
                         (backlist and delaying would be disabled)\n\
   -v                    verbose logging\n\

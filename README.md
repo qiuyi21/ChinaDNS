@@ -37,7 +37,7 @@ Install
       cd into [SDK] root, then
 
             pushd package
-            git clone https://github.com/clowwindy/ChinaDNS.git
+            git clone https://github.com/qiuyi21/ChinaDNS.git
             popd
             make menuconfig # select Network/ChinaDNS
             make -j
@@ -51,7 +51,7 @@ Install
       `~/WRT54GL-US_v4.30.11_11/tools/` to `/opt`, then
 
             export PATH=/opt/brcm/hndtools-mipsel-uclibc/bin/:/opt/brcm/hndtools-mipsel-linux/bin/:$PATH
-            git clone https://github.com/clowwindy/ChinaDNS.git
+            git clone https://github.com/qiuyi21/ChinaDNS.git
             cd ChinaDNS
             ./autogen.sh && ./configure --host=mipsel-linux --enable-static && make
 
@@ -119,7 +119,7 @@ Advanced
 --------
 
     usage: chinadns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]
-           [-c CHNROUTE_FILE] [-s DNS] [-v]
+           [-c CHNROUTE_FILE] [-s DNS] [-v] [-u user[:group]] [-r RESOLV_CONF] [-V]
     Forward DNS requests.
 
     -h, --help            show this help message and exit
@@ -131,10 +131,13 @@ Advanced
     -b BIND_ADDR          address that listens, default: 127.0.0.1
     -p BIND_PORT          port that listens, default: 53
     -s DNS                DNS servers to use, default:
-                          114.114.114.114,208.67.222.222:443,8.8.8.8
+                          114.114.114.114,223.5.5.5,8.8.8.8,8.8.4.4,208.67.222.222:443,208.67.222.222:5353
     -m                    Using DNS compression pointer mutation
                           (backlist and delaying would be disabled)
     -v                    verbose logging
+    -u user[:group]       run as other user and group
+    -r RESOLV_CONF        read DNS servers from RESOLV_CONF file
+    -V                    print version and exit
 
 About chnroute
 --------------
