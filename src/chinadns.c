@@ -34,13 +34,11 @@
 #include <pwd.h>
 #include <regex.h>
 #include <errno.h>
+#include "local_ns_parser.h"
+#include "config.h"
 #ifdef HAVE_SYS_INOTIFY_H
 #include <sys/inotify.h>
 #endif
-
-#include "local_ns_parser.h"
-
-#include "config.h"
 
 typedef struct {
   uint16_t id;
