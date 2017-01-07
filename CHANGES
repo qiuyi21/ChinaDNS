@@ -1,3 +1,9 @@
+1.4.0 2017-01-07
+- Add -u option to run as other user and group
+- Add -r option to read name servers from a resolv.conf file, and watching this file update name servers when file modified in Linux
+- Update help
+- Update chnroute.txt
+
 1.3.2 2015-08-05
 - Fix compatibility issues
 
