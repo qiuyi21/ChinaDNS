@@ -145,6 +145,7 @@ static int local_sock;
 static int remote_sock;
 static char *m_runasuser = NULL;
 static char *m_resolv_conf = NULL;
+static uint8_t m_reload = 0;
 
 #define INOTIFY_EVENT_SIZE    sizeof(struct inotify_event)
 #define INOTIFY_EVENT_BUF_LEN (32 * (INOTIFY_EVENT_SIZE + 16))
@@ -152,18 +153,14 @@ static char *m_resolv_conf = NULL;
 static void usage(void);
 
 #define __LOG(o, t, v, s...) do {                                   \
-  time_t now;                                                       \
-  time(&now);                                                       \
-  char *time_str = ctime(&now);                                     \
-  time_str[strlen(time_str) - 1] = '\0';                            \
   if (t == 0) {                                                     \
     if (stdout != o || verbose) {                                   \
-      fprintf(o, "%s ", time_str);                                  \
+      fprintf(o, "%s: ", get_time_str());                           \
       fprintf(o, s);                                                \
       fflush(o);                                                    \
     }                                                               \
   } else if (t == 1) {                                              \
-    fprintf(o, "%s %s:%d ", time_str, __FILE__, __LINE__);          \
+    fprintf(o, "%s: %s(%d) ", get_time_str(), __FILE__, __LINE__);  \
     perror(v);                                                      \
   }                                                                 \
 } while (0)
@@ -183,6 +180,32 @@ static void gcov_handler(int signum)
 #else
 #define DLOG(s...)
 #endif
+
+static char *get_time_str() {
+  static char tmstr[22];
+  struct tm t;
+  struct timespec ts;
+  size_t slen;
+
+  memset(&t, 0, sizeof(t));
+#ifdef CLOCK_REALTIME
+  if (clock_gettime(CLOCK_REALTIME, &ts)) {
+    perror("get CLOCK_REALTIME error");
+    memset(&ts, 0, sizeof(ts));
+  }
+#else
+  memset(&ts, 0, sizeof(ts));
+  ts.tv_sec = time(NULL);
+#endif
+  localtime_r(&ts.tv_sec, &t);
+  tmstr[0] = '\0';
+  slen = strftime(tmstr, 22, "%y-%m-%d %T", &t);
+
+  if (slen > 0) {
+    snprintf(tmstr + slen, 22 - slen, ".%03ld", ts.tv_nsec / 1000000);
+  }
+  return tmstr;
+}
 
 static int run_as_others() {
   int ret = EXIT_FAILURE;
@@ -298,14 +321,34 @@ static uint8_t is_modified(inotify_data *data) {
   return 0;
 }
 
-int main(int argc, char **argv) {
-  fd_set readset, errorset;
-  int max_fd;
-  inotify_data *nd = NULL;
+static void reload_handler(int signum) {
+  (void) signum;
+  m_reload = 1;
+}
+
+static void set_signal_handlers() {
+  struct sigaction sa;
+#ifdef SA_RESTART
+  sa.sa_flags = SA_RESTART;
+#else
+  sa.sa_flags = 0;
+#endif
+  sigemptyset(&sa.sa_mask);
+  sa.sa_handler = reload_handler;
+  sigaction(SIGHUP, &sa, NULL);
 
 #ifdef DEBUG
   signal(SIGTERM, gcov_handler);
 #endif
+}
+
+int main(int argc, char **argv) {
+  fd_set readset, errorset;
+  int max_fd;
+  inotify_data *nd = NULL;
+  struct timeval timout;
+
+  set_signal_handlers();
 
   memset(&id_addr_queue, 0, sizeof(id_addr_queue));
   if (0 != parse_args(&argc, argv))
@@ -340,16 +383,17 @@ int main(int argc, char **argv) {
     FD_SET(remote_sock, &readset);
     FD_SET(remote_sock, &errorset);
     if (nd) { FD_SET(nd->fd, &readset); }
-    struct timeval timeout = {
-      .tv_sec = 0,
-      .tv_usec = 50 * 1000,
-    };
-    if (-1 == select(max_fd, &readset, NULL, &errorset, &timeout)) {
+    timout.tv_sec = 0;
+    timout.tv_usec = 50 * 1000;
+    if (-1 == select(max_fd, &readset, NULL, &errorset, &timout)) {
+      if (errno == EINTR) { continue; }
       ERR("select");
       return EXIT_FAILURE;
     }
-    if (nd && FD_ISSET(nd->fd, &readset) && is_modified(nd))
+    if ((nd && FD_ISSET(nd->fd, &readset) && is_modified(nd)) || m_reload) {
+      m_reload = 0;
       resolve_dns_servers();
+    }
     check_and_send_delay();
     if (FD_ISSET(local_sock, &errorset)) {
       // TODO getsockopt(..., SO_ERROR, ...);
@@ -534,7 +578,8 @@ static int resolve_dns_servers() {
     exit(EXIT_FAILURE);
   }
   sprintf(buf, "%s%s", dns2, dns_servers);
-  LOG("nameservers=%s\n", buf);
+  printf("%s: nameservers=%s\n", get_time_str(), buf);
+  fflush(stdout);
 
   pch = strchr(buf, ',');
   while (pch != NULL) {
