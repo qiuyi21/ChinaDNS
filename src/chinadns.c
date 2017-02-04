@@ -326,16 +326,56 @@ static void reload_handler(int signum) {
   m_reload = 1;
 }
 
-static void set_signal_handlers() {
+static void set_signal_handlers(void) {
   struct sigaction sa;
+  uint32_t i;
+  int ignoresignal[] = {
+      SIGQUIT,
+  #ifdef SIGPIPE
+      SIGPIPE,
+  #endif
+  #ifdef SIGTSTP
+      SIGTSTP,
+  #endif
+  #ifdef SIGTTIN
+      SIGTTIN,
+  #endif
+  #ifdef SIGTTOU
+      SIGTTOU,
+  #endif
+  #ifdef SIGINFO
+      SIGINFO,
+  #endif
+  #ifdef SIGUSR1
+      SIGUSR1,
+  #endif
+  #ifdef SIGUSR2
+      SIGUSR2,
+  #endif
+  #ifdef SIGCHLD
+      SIGCHLD,
+  #endif
+  #ifdef SIGCLD
+      SIGCLD,
+  #endif
+      -1
+  };
+
+  memset(&sa, 0, sizeof(sa));
 #ifdef SA_RESTART
   sa.sa_flags = SA_RESTART;
 #else
   sa.sa_flags = 0;
 #endif
   sigemptyset(&sa.sa_mask);
+
   sa.sa_handler = reload_handler;
   sigaction(SIGHUP, &sa, NULL);
+
+  sa.sa_handler = SIG_IGN;
+  for (i = 0; ignoresignal[i] > 0; i++) {
+      sigaction(ignoresignal[i], &sa, NULL);
+  }
 
 #ifdef DEBUG
   signal(SIGTERM, gcov_handler);
