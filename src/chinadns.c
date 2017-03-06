@@ -146,6 +146,7 @@ static int remote_sock;
 static char *m_runasuser = NULL;
 static char *m_resolv_conf = NULL;
 static uint8_t m_reload = 0;
+static uint8_t m_priv_nw_as_chn = 0;    // treat private network DNS as China DNS
 
 #define INOTIFY_EVENT_SIZE    sizeof(struct inotify_event)
 #define INOTIFY_EVENT_BUF_LEN (32 * (INOTIFY_EVENT_SIZE + 16))
@@ -469,7 +470,7 @@ static int setnonblock(int sock) {
 
 static int parse_args(int *argc, char **argv) {
   int ch;
-  while ((ch = getopt(*argc, argv, "hb:p:s:l:c:y:u:r:dmvV")) != -1) {
+  while ((ch = getopt(*argc, argv, "hb:p:s:l:c:y:u:r:dmvVP")) != -1) {
     switch (ch) {
       case 'h':
         usage();
@@ -514,6 +515,9 @@ static int parse_args(int *argc, char **argv) {
       case 'V':
         printf("ChinaDNS %s\n", PACKAGE_VERSION);
         exit(0);
+      case 'P':
+        m_priv_nw_as_chn = 1;
+        break;
       default:
         usage();
         exit(1);
@@ -594,6 +598,23 @@ out:
   return addrs;
 }
 
+static inline uint8_t is_china_dns(struct addrinfo *addr_ip) {
+  struct in_addr ip = ((struct sockaddr_in *) addr_ip->ai_addr)->sin_addr;
+  if (m_priv_nw_as_chn) {
+    uint8_t n1 = ip.s_addr & 0xFF;
+    if (n1 == 10)                     // 10.0.0.0/8
+      return 1;
+    else if (n1 == (uint8_t) 192) {   // 192.168.0.0/16
+      if (((ip.s_addr >> 8) & 0xFF) == 168) return 1;
+    } else if (n1 == (uint8_t) 172) { // 172.16.0.0/12
+      if (((ip.s_addr >> 8) & 0xF0) == 16) return 1;
+    } else if (n1 == 100) {           // 100.64.0.0/10
+      if (((ip.s_addr >> 8) & 0xC0) == 64) return 1;
+    }
+  }
+  return test_ip_in_list(ip, &chnroute_list);
+}
+
 static int resolve_dns_servers() {
   struct addrinfo hints;
   struct addrinfo *addr_ip;
@@ -651,8 +672,7 @@ static int resolve_dns_servers() {
       goto out;
     }
     if (compression) {
-      if (test_ip_in_list(((struct sockaddr_in *)addr_ip->ai_addr)->sin_addr,
-                          &chnroute_list)) {
+      if (is_china_dns(addr_ip)) {
         dns_server_addrs[has_chn_dns].addr = addr_ip->ai_addr;
         dns_server_addrs[has_chn_dns].addrlen = addr_ip->ai_addrlen;
         has_chn_dns++;
@@ -668,8 +688,7 @@ static int resolve_dns_servers() {
       i++;
       token = strtok(0, ",");
       if (chnroute_file) {
-        if (test_ip_in_list(((struct sockaddr_in *)addr_ip->ai_addr)->sin_addr,
-                            &chnroute_list)) {
+        if (is_china_dns(addr_ip)) {
           has_chn_dns = 1;
         } else {
           has_foreign_dns = 1;
@@ -1212,7 +1231,8 @@ static void free_delay(int pos) {
 static void usage() {
   puts("\
 usage: chinadns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]\n\
-       [-c CHNROUTE_FILE] [-s DNS] [-m] [-v] [-u user[:group]] [-r RESOLV_CONF] [-V]\n\
+       [-c CHNROUTE_FILE] [-s DNS] [-m] [-v] [-u user[:group]] [-r RESOLV_CONF]\n\
+       [-P] [-V]\n\
 Forward DNS requests.\n\
 \n\
   -l IPLIST_FILE        path to ip blacklist file\n\
@@ -1230,6 +1250,7 @@ Forward DNS requests.\n\
   -v                    verbose logging\n\
   -u user[:group]       run as other user and group\n\
   -r RESOLV_CONF        read DNS servers from RESOLV_CONF file\n\
+  -P                    treat private network DNS as China DNS\n\
   -h                    show this help message and exit\n\
   -V                    print version and exit\n\
 \n\
