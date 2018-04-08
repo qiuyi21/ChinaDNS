@@ -1,14 +1,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ChinaDNS
-PKG_VERSION:=1.4.1
-PKG_RELEASE=$(PKG_SOURCE_VERSION)
+PKG_RELEASE:=2
 
-PKG_SOURCE_URL:=https://github.com/qiuyi21/ChinaDNS/releases/download/$(PKG_VERSION)
-PKG_SOURCE:=chinadns-$(PKG_VERSION).tar.gz
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/qiuyi21/ChinaDNS.git
+PKG_SOURCE_DATE:=2017-03-06
+PKG_SOURCE_VERSION:=216302153e4ea4e99e690b85698fa5823f7de8cc
+
 PKG_MAINTAINER:=clowwindy <clowwindy42@gmail.com>
-
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(BUILD_VARIANT)/chinadns-$(PKG_VERSION)
 
 PKG_INSTALL:=1
 PKG_FIXUP:=autoreconf
@@ -21,7 +21,7 @@ define Package/ChinaDNS/Default
   SECTION:=net
   CATEGORY:=Network
   TITLE:=ChinaDNS
-	URL:=https://github.com/clowwindy/ChinaDNS
+  URL:=https://github.com/clowwindy/ChinaDNS
 endef
 
 define Package/ChinaDNS
@@ -34,16 +34,21 @@ endef
 
 define Package/ChinaDNS/conffiles
 /etc/chinadns_iplist.txt
-/etc/chinadns_chnroute.txt
+endef
+
+define Build/Prepare
+	$(Build/Prepare/Default)
+	./files/prepare.sh "$(PKG_BUILD_DIR)"
 endef
 
 define Package/ChinaDNS/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/iplist.txt $(1)/etc/chinadns_iplist.txt
-	$(INSTALL_CONF) $(PKG_BUILD_DIR)/chnroute.txt $(1)/etc/chinadns_chnroute.txt
+	$(INSTALL_DIR) $(1)/usr/share/chinadns
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/chnroute.gz $(1)/usr/share/chinadns/
 	$(INSTALL_BIN) ./files/chinadns.init $(1)/etc/init.d/chinadns
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/chinadns $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/chinadns $(1)/usr/bin/
 endef
 
 $(eval $(call BuildPackage,ChinaDNS))

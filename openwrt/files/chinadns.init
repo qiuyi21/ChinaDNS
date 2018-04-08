@@ -4,34 +4,53 @@
 START=90
 STOP=15
 EXTRA_COMMANDS="restart"
-PIDFILE='/tmp/chinadns.pid'
 
-start()
-{
-    if [ -f $PIDFILE ]
-        then
-            echo "already started: $PIDFILE exists"
-            exit 1
-    fi
-    chinadns \
-        -l /etc/chinadns_iplist.txt \
-        -c /etc/chinadns_chnroute.txt \
-        -p 5353 \
-        1> /tmp/log/chinadns.log \
-        2> /tmp/log/chinadns.err.log &
-    echo $! > $PIDFILE
-    iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5353
+start() {
+	if pgrep chinadns >/dev/null; then
+		echo "already started"
+		return 0
+	fi
+
+	local IPFILE=/etc/chinadns_chnroute.txt
+	[ -s $IPFILE ] || gzip -d -c /usr/share/chinadns/chnroute.gz >$IPFILE
+
+	local CONF=/etc/config/chinadns
+	[ -f $CONF ] && . $CONF
+
+	[ -z "$PORT" ] && PORT=5353
+	[ -n "$DNS" ] && OPTS="$OPTS -s \"$DNS\""
+
+	if [ -n "$STDOUT" ]; then
+		touch "$STDOUT"
+		chown nobody "$STDOUT"
+	else
+		STDOUT=/dev/null
+	fi
+
+	if [ -n "$STDERR" ]; then
+		touch "$STDERR"
+		chown nobody "$STDERR"
+	else
+		STDERR=/dev/null
+	fi
+
+	eval chinadns -l /etc/chinadns_iplist.txt -c $IPFILE \
+		-u nobody:nogroup -r /tmp/resolv.conf.auto \
+		-p $PORT $OPTS </dev/null >"$STDOUT" 2>"$STDERR" &
+
+	# iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5353
+	return 0
 }
 
-stop()
-{
-    iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5353
-    kill `cat $PIDFILE`
-    rm $PIDFILE
+stop() {
+	# iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5353
+	local PID="`pgrep chinadns`"
+	[ -n "$PID" ] && kill "$PID"
+	return 0
 }
 
-restart()
-{
-    stop
-    start
+restart() {
+	stop
+	sleep 2
+	start
 }
