@@ -18,7 +18,7 @@ start() {
 	[ -f $CONF ] && . $CONF
 
 	[ -z "$PORT" ] && PORT=5353
-	[ -n "$DNS" ] && OPTS="$OPTS -s \"$DNS\""
+	[ -n "$DNS" ] && OPTS="$OPTS -s $DNS"
 
 	if [ -n "$STDOUT" ]; then
 		touch "$STDOUT"
@@ -34,7 +34,7 @@ start() {
 		STDERR=/dev/null
 	fi
 
-	eval chinadns -l /etc/chinadns_iplist.txt -c $IPFILE \
+	chinadns -l /etc/chinadns_iplist.txt -c $IPFILE \
 		-u nobody:nogroup -r /tmp/resolv.conf.auto \
 		-p $PORT $OPTS </dev/null >"$STDOUT" 2>"$STDERR" &
 
