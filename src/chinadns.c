@@ -598,19 +598,23 @@ out:
   return addrs;
 }
 
-static inline uint8_t is_china_dns(struct addrinfo *addr_ip) {
-  struct in_addr ip = ((struct sockaddr_in *) addr_ip->ai_addr)->sin_addr;
-  if (m_priv_nw_as_chn) {
-    uint8_t n1 = ip.s_addr & 0xFF;
-    if (n1 == 10)                     // 10.0.0.0/8
-      return 1;
-    else if (n1 == (uint8_t) 192) {   // 192.168.0.0/16
-      if (((ip.s_addr >> 8) & 0xFF) == 168) return 1;
-    } else if (n1 == (uint8_t) 172) { // 172.16.0.0/12
-      if (((ip.s_addr >> 8) & 0xF0) == 16) return 1;
-    } else if (n1 == 100) {           // 100.64.0.0/10
-      if (((ip.s_addr >> 8) & 0xC0) == 64) return 1;
-    }
+static inline uint8_t is_reserved_addr(struct in_addr ip) {
+  uint8_t n1 = ip.s_addr & 0xFF;
+  if (n1 == 10)                     // 10.0.0.0/8
+    return 1;
+  else if (n1 == (uint8_t) 192) {   // 192.168.0.0/16
+    if (((ip.s_addr >> 8) & 0xFF) == 168) return 1;
+  } else if (n1 == (uint8_t) 172) { // 172.16.0.0/12
+    if (((ip.s_addr >> 8) & 0xF0) == 16) return 1;
+  } else if (n1 == 100) {           // 100.64.0.0/10
+    if (((ip.s_addr >> 8) & 0xC0) == 64) return 1;
+  }
+  return 0;
+}
+
+static inline uint8_t is_china_dns(struct in_addr ip) {
+  if (m_priv_nw_as_chn && is_reserved_addr(ip)) {
+    return 1;
   }
   return test_ip_in_list(ip, &chnroute_list);
 }
@@ -623,6 +627,7 @@ static int resolve_dns_servers() {
   int i = 0;
   char *pch, *buf = NULL, *port, *dns2 = NULL;
   int has_foreign_dns = 0;
+  struct in_addr ipAddr;
   has_chn_dns = 0;
   dns_servers_len = 1;
   if (compression) {
@@ -671,12 +676,15 @@ static int resolve_dns_servers() {
       VERR("%s:%s\n", gai_strerror(r), token);
       goto out;
     }
+    ipAddr = ((struct sockaddr_in *) addr_ip->ai_addr)->sin_addr;
     if (compression) {
-      if (is_china_dns(addr_ip)) {
+      if (is_china_dns(ipAddr)) {
+        printf("%s is China DNS\n", inet_ntoa(ipAddr));
         dns_server_addrs[has_chn_dns].addr = addr_ip->ai_addr;
         dns_server_addrs[has_chn_dns].addrlen = addr_ip->ai_addrlen;
         has_chn_dns++;
       } else {
+        printf("%s is foreign DNS\n", inet_ntoa(ipAddr));
         has_foreign_dns++;
         dns_server_addrs[dns_servers_len - has_foreign_dns].addr = addr_ip->ai_addr;
         dns_server_addrs[dns_servers_len - has_foreign_dns].addrlen = addr_ip->ai_addrlen;
@@ -688,9 +696,11 @@ static int resolve_dns_servers() {
       i++;
       token = strtok(0, ",");
       if (chnroute_file) {
-        if (is_china_dns(addr_ip)) {
+        if (is_china_dns(ipAddr)) {
+          printf("%s is China DNS\n", inet_ntoa(ipAddr));
           has_chn_dns = 1;
         } else {
+          printf("%s is foreign DNS\n", inet_ntoa(ipAddr));
           has_foreign_dns = 1;
         }
       }
@@ -1094,7 +1104,7 @@ static int should_filter_query(ns_msg msg, struct in_addr dns_addr) {
   int dns_is_chn = 0;
   int dns_is_foreign = 0;
   if (chnroute_file && (dns_servers_len > 1)) {
-    dns_is_chn = test_ip_in_list(dns_addr, &chnroute_list);
+    dns_is_chn = is_china_dns(dns_addr);
     dns_is_foreign = !dns_is_chn;
   }
   rrmax = ns_msg_count(msg, ns_s_an);
@@ -1135,6 +1145,8 @@ static int should_filter_query(ns_msg msg, struct in_addr dns_addr) {
             // filter DNS result from foreign dns if result is inside chn
             return 1;
           }
+        } else if (rrmax == 1 && is_reserved_addr(dns_addr) && is_reserved_addr(*(struct in_addr *) rd)) {
+          return 0;
         }
       } else {
         // result is foreign
